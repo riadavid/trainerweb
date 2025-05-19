@@ -11,7 +11,7 @@ import base64
 
 # ---------- Firebase Setup ----------
 if not firebase_admin._apps:
-    cred = credentials.Certificate("serviceAccountKey.json")
+    cred = credentials.Certificate(st.secrets["firebase_service_account"])
     firebase_admin.initialize_app(cred, {
         'databaseURL': 'https://trainerlocatorv2-default-rtdb.asia-southeast1.firebasedatabase.app/'
     })
@@ -102,7 +102,6 @@ if not st.session_state.authenticated:
     login()
     st.stop()
 else:
-    # Remove extra padding
     st.markdown("""
         <style>
             .block-container {
