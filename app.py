@@ -8,25 +8,46 @@ from datetime import datetime
 import folium
 from streamlit_folium import st_folium
 import base64
+import json
+import os
 
 # ---------- Firebase Setup ----------
-if not firebase_admin._apps:
-    cred = credentials.Certificate(st.secrets["firebase_service_account"])
-    firebase_admin.initialize_app(cred, {
-        'databaseURL': 'https://trainerlocatorv2-default-rtdb.asia-southeast1.firebasedatabase.app/'
-    })
+try:
+    if not firebase_admin._apps:
+        firebase_creds = dict(st.secrets["firebase_service_account"])
+        firebase_creds["private_key"] = firebase_creds["private_key"].replace("\\n", "\n")
+        cred = credentials.Certificate(firebase_creds)
+        firebase_admin.initialize_app(cred, {
+            'databaseURL': 'https://trainerlocatorv2-default-rtdb.asia-southeast1.firebasedatabase.app/'
+        })
+except Exception as e:
+    st.error(f"Firebase initialization failed: {e}")
+    st.stop()
 
 # ---------- Reverse Geocoding Function ----------
 def get_state(lat, lon):
+    # Try API Ninjas first
     try:
-        api_key = st.secrets["api_ninjas"]["key"]
-        url = f"https://api.api-ninjas.com/v1/reversegeocoding?lat={lat}&lon={lon}"
-        response = requests.get(url, headers={"X-Api-Key": api_key})
+        api_key = st.secrets.get("api_ninjas", {}).get("key", None)
+        if api_key:
+            url = f"https://api.api-ninjas.com/v1/reversegeocoding?lat={lat}&lon={lon}"
+            response = requests.get(url, headers={"X-Api-Key": api_key})
+            if response.status_code == 200:
+                data = response.json()
+                return data[0].get("state", "Unknown")
+    except Exception as e:
+        print(f"API Ninjas reverse geocoding failed: {e}")
+    
+    # Fallback: OpenStreetMap Nominatim
+    try:
+        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=5&addressdetails=1"
+        response = requests.get(url, headers={"User-Agent": "TrainerLocatorApp"})
         if response.status_code == 200:
             data = response.json()
-            return data[0].get("state", "Unknown")
+            return data.get("address", {}).get("state", "Unknown")
     except Exception as e:
-        print(f"Reverse geocoding failed: {e}")
+        print(f"Nominatim reverse geocoding failed: {e}")
+    
     return "Unknown"
 
 # ---------- Streamlit Config ----------
@@ -107,8 +128,8 @@ else:
             .block-container {
                 padding-top: 5rem;
                 padding-bottom: 1rem;
-                padding-left: 0rem !important;
-                padding-right: 0rem !important;
+                padding-left: 5rem !important;
+                padding-right: 5rem !important;
             }
         </style>
     """, unsafe_allow_html=True)
@@ -167,7 +188,7 @@ if data:
         df_filtered = df[df["State"] == selected_state]
         center_lat = df_filtered["Latitude"].mean() if not df_filtered.empty else 20.5937
         center_lon = df_filtered["Longitude"].mean() if not df_filtered.empty else 78.9629
-        zoom_level = 6
+        zoom_level = 8
     else:
         df_filtered = df
         center_lat, center_lon = 20.5937, 78.9629
@@ -179,12 +200,44 @@ if data:
 
     m = folium.Map(location=[center_lat, center_lon], zoom_start=zoom_level)
 
+# Highlight selected state boundary
+    if selected_state != "All":
+        try:
+            with open("india_state.geojson", "r", encoding="utf-8") as f:
+                india_state = json.load(f)
+
+            def style_function(feature):
+                if feature["properties"]["NAME_1"].lower() == selected_state.lower():
+                    return {
+                        "fillColor": "#988df8",
+                        "color": "#5d50ec",
+                        "weight": 3,
+                        "fillOpacity": 0.3
+                    }
+                else:
+                    return {
+                        "fillColor": "#cccccc",
+                        "color": "#aaaaaa",
+                        "weight": 1,
+                        "fillOpacity": 0.1
+                    }
+
+            folium.GeoJson(
+                india_state,
+                name="geojson",
+                style_function=style_function
+            ).add_to(m)
+        except Exception as e:
+            st.warning(f"GeoJSON could not be loaded: {e}")
+
+    # Plot markers as before
     for _, row in df_filtered.iterrows():
         folium.Marker(
             location=[row["Latitude"], row["Longitude"]],
             popup=f"<b>{row['Name']}</b><br>📞 {row['Phone']}<br>🕒 {row['Timestamp']}<br>📍 {row['State']}",
             icon=folium.Icon(color='darkblue', icon='map-marker', prefix='fa')
         ).add_to(m)
+
 
     st_data = st_folium(m, width="100%", height=500)
     st.markdown("</div>", unsafe_allow_html=True)
